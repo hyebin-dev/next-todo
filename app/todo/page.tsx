@@ -13,6 +13,7 @@ type Sort = "newest" | "due" | "priority" | "doneFirst";
 export default function TodoPage() {
   const [todos, setTodos] = useState<TodoType[]>([]);
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState<string | null>(null);
 
   // 입력 폼 상태(기본값 포함)
   const [title, setTitle] = useState("");
@@ -31,12 +32,46 @@ export default function TodoPage() {
   // 전체 목록 불러오기
   const fetchTodos = async () => {
     setLoading(true);
+    setApiError(null);
+
     try {
       const res = await fetch("/api/todo", { cache: "no-store" });
+
+      // 1) HTTP 에러 처리
+      if (!res.ok) {
+        let msg = `Failed to load todos (HTTP ${res.status})`;
+        try {
+          const errJson = await res.json();
+          if (typeof errJson?.message === "string") msg = errJson.message;
+        } catch {
+          // ignore
+        }
+        setTodos([]);
+        setApiError(msg);
+        return;
+      }
+
+      // 2) JSON 파싱 + 타입 방어
       const data = await res.json();
-      setTodos(data);
+
+      if (Array.isArray(data)) {
+        setTodos(data);
+        return;
+      }
+
+      // 혹시 { todos: [...] } 형태도 지원
+      if (Array.isArray((data as any)?.todos)) {
+        setTodos((data as any).todos);
+        return;
+      }
+
+      // 3) 배열이 아니면 안전 처리
+      setTodos([]);
+      setApiError("Invalid API response (expected an array).");
     } catch (e) {
       console.error(e);
+      setTodos([]);
+      setApiError("Network error. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -53,6 +88,8 @@ export default function TodoPage() {
     const t = title.trim();
     if (!t) return;
 
+    setApiError(null);
+
     const payload = {
       title: t,
       priority,
@@ -67,11 +104,25 @@ export default function TodoPage() {
     });
 
     if (!res.ok) {
-      console.error("Failed to create todo");
+      let msg = "Failed to create todo";
+      try {
+        const errJson = await res.json();
+        if (typeof errJson?.message === "string") msg = errJson.message;
+      } catch {
+        // ignore
+      }
+      setApiError(msg);
       return;
     }
 
     const created = await res.json();
+
+    // created가 객체 1개가 아닐 수도 있으니 방어
+    if (!created || typeof created !== "object") {
+      setApiError("Invalid API response (expected a todo object).");
+      return;
+    }
+
     setTodos((prev) => [created, ...prev]);
 
     // 폼 리셋
@@ -84,6 +135,8 @@ export default function TodoPage() {
 
   // 완료 상태 토글
   const toggleDone = async (id: number, next: boolean) => {
+    setApiError(null);
+
     setTodos((prev) =>
       prev.map((t) => (t.id === id ? { ...t, is_done: next ? 1 : 0 } : t))
     );
@@ -95,13 +148,15 @@ export default function TodoPage() {
     });
 
     if (!res.ok) {
-      console.error("toggle failed");
+      setApiError("Failed to update todo. Refreshing...");
       fetchTodos();
     }
   };
 
   // 할 일 삭제
   const handleDelete = async (id: number) => {
+    setApiError(null);
+
     setTodos((prev) => prev.filter((t) => t.id !== id));
 
     const res = await fetch(`/api/todo/${id}`, {
@@ -109,14 +164,17 @@ export default function TodoPage() {
     });
 
     if (!res.ok) {
-      console.error("delete failed");
+      setApiError("Failed to delete todo. Refreshing...");
       fetchTodos();
     }
   };
 
+  // 항상 배열로 안전 처리
+  const safeTodos = Array.isArray(todos) ? todos : [];
+
   // 헤더용 카운트/진행률 계산
-  const total = todos.length;
-  const doneCount = todos.filter((t) => t.is_done === 1).length;
+  const total = safeTodos.length;
+  const doneCount = safeTodos.filter((t) => t.is_done === 1).length;
   const activeCount = total - doneCount;
   const progress = total === 0 ? 0 : Math.round((doneCount / total) * 100);
 
@@ -155,7 +213,7 @@ export default function TodoPage() {
 
   // 필터/검색/정렬 적용된 최종 리스트
   const filteredTodos = useMemo(() => {
-    let list = [...todos];
+    let list = [...safeTodos];
 
     // 1) 상태 필터
     if (filter === "active") list = list.filter((t) => t.is_done === 0);
@@ -186,11 +244,24 @@ export default function TodoPage() {
     }
 
     return sortList(list);
-  }, [todos, filter, query, dateQuery, sort]);
+  }, [safeTodos, filter, query, dateQuery, sort]);
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-[#F6F7FF] via-[#F9FBFF] to-[#FFF7FB] px-3 py-6">
       <div className="mx-auto w-full max-w-[720px]">
+        {apiError && (
+          <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {apiError}
+            <button
+              className="ml-3 underline"
+              onClick={() => fetchTodos()}
+              type="button"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
         <TodoHeader
           total={total}
           activeCount={activeCount}
